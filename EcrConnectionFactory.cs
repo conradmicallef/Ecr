@@ -41,7 +41,7 @@ namespace Transactium.EcrService
             connectionString = $"{host}:{port}";
             return connections.GetOrAdd(connectionString, (s) =>
             {
-                logger.LogInformation("Creating New Connection {connectionString}", connectionString);
+                logger.LogInformation("Creating New Connection {ConnectionString}", s);
                 return new(ep, sp.GetRequiredService<ILogger<EcrConnection>>(), cts.Token);
             });
         }

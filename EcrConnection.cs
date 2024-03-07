@@ -30,27 +30,27 @@ namespace Transactium.EcrService
         // Utility function to create linked token
         CancellationTokenSource CancelAfter(TimeSpan ts)
         {
-            var ct = CancellationTokenSource.CreateLinkedTokenSource(this.ct);
-            ct.CancelAfter(ts);
-            return ct;
+            var new_ct = CancellationTokenSource.CreateLinkedTokenSource(this.ct);
+            new_ct.CancelAfter(ts);
+            return new_ct;
         }
         // Utility function to log state
         void LogState()
         {
-            logger.LogInformation("State {state} {ep}", state, ep.ToString());
+            logger.LogInformation("State {State} {EndPoint}", state, ep.ToString());
         }
         // Main task - connect to ecr, validate state and await commands
         // also ping connection when idle for 1 minute
         async Task Execute()
         {
-            logger.LogInformation("Started ECR {ep}",ep.ToString());
+            logger.LogInformation("Started ECR {EndPoint}",ep.ToString());
             while (!ct.IsCancellationRequested)
             {
                 try
                 {
                     using TcpClient tcpClient = new();
                     state = State.Disconnected;
-                    logger.LogInformation("Connecting {ep}", ep.ToString());
+                    logger.LogInformation("Connecting {EndPoint}", ep.ToString());
                     using CancellationTokenSource ctConnect = CancelAfter(TimeSpan.FromSeconds(10));
                     await tcpClient.ConnectAsync(ep, ctConnect.Token);
                     state = State.Connected;
@@ -58,13 +58,13 @@ namespace Transactium.EcrService
                     await ExecuteConnectedState(tcpClient);
                 }
                 catch (Exception e){
-                    logger.LogError(e, "Error in Connection {ep}", ep.ToString());
+                    logger.LogError(e, "Error in Connection {EndPoint}", ep.ToString());
                     state = State.Disconnected;
                     if (!ct.IsCancellationRequested)
                         await Task.Delay(30000,ct);
                 }
             }
-            logger.LogInformation("Stopped ECR {ep}", ep.ToString());
+            logger.LogInformation("Stopped ECR {EndPoint}", ep.ToString());
 
         }
         // Log version and perform ping
@@ -101,30 +101,26 @@ namespace Transactium.EcrService
                         state = State.Waiting;
                         ctWaitForResponse.CancelAfter(request.WaitFor);
                         var resp = await Exchange(tcpClient, request.Request, ctWaitForResponse.Token);
-                        await request.WaitLock(CancellationToken.None);
-                        request.Response = resp;
-                        request.RepliedTime = DateTime.UtcNow;
+                        request.SetResponse(resp);
                         request.SignalReply();
-                        request.ReleaseLock();
                         state = State.Ready;
                     }
                     catch (Exception e)
                     {
-                        await request.WaitLock(CancellationToken.None);
                         //flag response status
-                        request.Exception = e;
+                        request.SetException(e);
                         request.SignalReply();
                         if (request.Removed)
                             request.Dispose();
-                        else
-                            request.ReleaseLock();
                         //see if its required to continue waiting for response
                         if (e is OperationCanceledException 
                             && ctWaitForResponse.IsCancellationRequested 
                             && !ctWaitResponse.IsCancellationRequested)
                         {
                             var resp=await Receive(tcpClient, ctWaitResponse.Token);
-                            logger.LogError("Response received late - consider increasing timeout {ep} - {resp}", ep.ToString(), resp);
+#pragma warning disable S6667 // Logging in a catch clause should pass the caught exception as a parameter.
+                            logger.LogError("Response received late - consider increasing timeout {EndPoint} - {Response}", ep.ToString(), resp);
+#pragma warning restore S6667 // Logging in a catch clause should pass the caught exception as a parameter.
                             continue;
                         }
                         if (e is OperationCanceledException)
@@ -149,8 +145,8 @@ namespace Transactium.EcrService
         /// <returns></returns>
         private Task<string> Exchange(TcpClient tcpClient, string v, TimeSpan ts)
         {
-            using var ct = CancelAfter(ts);
-            return Exchange(tcpClient,v, ct.Token);
+            using var new_ct = CancelAfter(ts);
+            return Exchange(tcpClient,v, new_ct.Token);
         }
         /// <summary>
         /// perform io function with terminal
@@ -173,17 +169,17 @@ namespace Transactium.EcrService
                     using var ctExtra = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     ctExtra.CancelAfter(100);
                     var extra = await Receive(tcpClient, ctExtra.Token);
-                    logger.LogError("Unexpected reply from {ep} - {extra}", ep.ToString(), extra);
+                    logger.LogError("Unexpected reply from {EndPoint} - {ExtraPacket}", ep.ToString(), extra);
                 }
                 catch (OperationCanceledException)
                 {
                     break;
                 }
             }
-            logger.LogInformation("TX {ep} {req}", ep.ToString(), v);
+            logger.LogInformation("TX {EndPoint} {Request}", ep.ToString(), v);
             await Send(tcpClient, v, ct);
             var resp=await Receive(tcpClient,ct);
-            logger.LogInformation("RX {ep} {resp}", ep.ToString(), resp);
+            logger.LogInformation("RX {EndPoint} {Response}", ep.ToString(), resp);
             return resp;
         }
 
@@ -202,7 +198,7 @@ namespace Transactium.EcrService
             if (waitFor.TotalSeconds<1) throw new ArgumentOutOfRangeException(nameof(waitFor));
             if (state < State.Connected)
             {
-                logger.LogWarning("ECR not connected - Exchange failed for {request}", request);
+                logger.LogWarning("ECR not connected - Exchange failed for {Request}", request);
                 throw new EcrException("ECR not connected");
             }
             EcrRequest req = new() { Request = request, RequestedTime = DateTime.UtcNow, WaitFor = waitFor };
@@ -212,15 +208,15 @@ namespace Transactium.EcrService
                 using var ctWait = CancelAfter(waitFor);
                 await req.WaitReply(ctWait.Token);
                 await req.WaitLock(CancellationToken.None);
-                req.Dispose();
+                req.Dispose();//Dispose will release lock too
                 if (!req.RepliedTime.HasValue)
                     throw req.Exception??new EcrException("Request not replied");
                 return req.Response;
             }
             catch(Exception e)
             {
-                logger.LogWarning(e, "Exchange failed for {request}",request);
-                await EcrRequests.RemoveRequest(req);
+                logger.LogWarning(e, "Exchange failed for {Request}",request);
+                EcrRequests.RemoveRequest(req);
                 if (e is OperationCanceledException)
                     throw new EcrException("Timeout", e);
                 throw;
@@ -238,8 +234,10 @@ namespace Transactium.EcrService
                 {
                     await Task.Delay(1000, ctWait.Token);
                 }
-                catch {
-                    logger.LogWarning("State {waitForState} not Reached - stuck in {state}", waitForState,state);
+                catch (OperationCanceledException){
+#pragma warning disable S6667 // Logging in a catch clause should pass the caught exception as a parameter.
+                    logger.LogWarning("State {WaitForState} not Reached - stuck in {State}", waitForState,state);
+#pragma warning restore S6667 // Logging in a catch clause should pass the caught exception as a parameter.
                     throw; 
                 }
             }

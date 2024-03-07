@@ -54,10 +54,10 @@ namespace Transactium.EcrService
                         while (!cts.IsCancellationRequested)
                         {
                             var req = await Receive(client, cts.Token);
-                            logger.LogInformation("SIMU RX {packet}", req);
+                            logger.LogInformation("SIMU RX {Request}", req);
                             var resp = await Handle(req);
                             await Send(client, resp, cts.Token);
-                            logger.LogInformation("SIMU TX {packet}", req);
+                            logger.LogInformation("SIMU TX {Response}", req);
                         }
                     }
                     catch (Exception e)

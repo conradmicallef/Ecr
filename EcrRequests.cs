@@ -31,7 +31,7 @@ namespace Transactium.EcrService
                 {
                     await req.WaitLock(CancellationToken.None);
                     if (req.Removed)
-                        req.Dispose();
+                        req.Dispose();//Dispose will release lock
                     else
                     {
                         req.ReleaseLock();
@@ -41,11 +41,9 @@ namespace Transactium.EcrService
             }
         }
 
-        public static async Task RemoveRequest(EcrRequest req)
+        public static void RemoveRequest(EcrRequest req)
         {
-            await req.WaitLock(CancellationToken.None);
-            req.Removed = true;
-            req.ReleaseLock();
+            req.Remove();
             if (req.Exception != null)
                 req.Dispose();
         }
