@@ -1,4 +1,4 @@
-﻿// See https://aka.ms/new-console-template for more information
+﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Net;
@@ -14,10 +14,12 @@ namespace Transactium.EcrService
         private readonly CancellationTokenSource cts = new();
         private readonly ConcurrentDictionary<string, EcrConnection> connections = new();
         private readonly ILogger<EcrConnectionFactory> logger;
+        private readonly IServiceProvider sp;
 
-        public EcrConnectionFactory(ILogger<EcrConnectionFactory> logger)
+        public EcrConnectionFactory(ILogger<EcrConnectionFactory> logger,IServiceProvider sp)
         {
             this.logger = logger;
+            this.sp = sp;
         }
 
         public async ValueTask DisposeAsync()
@@ -40,7 +42,7 @@ namespace Transactium.EcrService
             return connections.GetOrAdd(connectionString, (s) =>
             {
                 logger.LogInformation("Creating New Connection {connectionString}", connectionString);
-                return new(ep, logger, cts.Token);
+                return new(ep, sp.GetRequiredService<ILogger<EcrConnection>>(), cts.Token);
             });
         }
     }

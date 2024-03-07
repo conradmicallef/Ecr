@@ -16,10 +16,32 @@ services.AddSingleton<EcrSimulator>();
     var ecr = cf.GetOrCreate("127.0.0.1:2000");
     try
     {
+        sim.AddHandler(async req => {
+            if (req.StartsWith("W010"))
+            {
+                await Task.Delay(10000);
+                return (true, req + ",0");
+            }
+            return (false, req);
+        });
+        sim.AddHandler(async req => {
+            if (req.StartsWith("W001"))
+            {
+                await Task.Delay(1000);
+                return (true, req + ",0");
+            }
+            return (false, req);
+        });
         await ecr.WaitState(EcrConnection.State.Ready, TimeSpan.FromSeconds(30));
         while (true) { 
-            await Task.Delay(10000);
-            var resp=await ecr.Exchange("XXXX", TimeSpan.FromSeconds(1));
+            try{
+                var resp=await ecr.IO("W001", TimeSpan.FromSeconds(2));
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "In program");
+            }
+            await Task.Delay(1000);
         }
     }
     catch(Exception ex)

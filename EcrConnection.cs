@@ -1,20 +1,22 @@
-﻿// See https://aka.ms/new-console-template for more information
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Sockets;
 
 namespace Transactium.EcrService
 {
-    public sealed class EcrConnection : IAsyncDisposable
+    /// <summary>
+    /// Class handing an ECR connection. This should be only instantiated from the factory and never directly
+    /// </summary>
+    public sealed class EcrConnection : EcrConnectionBase,IAsyncDisposable
     {
         private readonly IPEndPoint ep;
         private readonly CancellationToken ct;
-        private readonly ILogger logger;
+        private readonly ILogger<EcrConnection> logger;
         private readonly Task executeTask;
         public enum State { Disconnected, Connected, Ready, Waiting}
         State state;
         readonly EcrRequests requests = new();
-        public EcrConnection(IPEndPoint ep,ILogger logger, CancellationToken ct)
+        internal EcrConnection(IPEndPoint ep,ILogger<EcrConnection> logger, CancellationToken ct)
         {
             this.ep = ep;
             this.logger = logger;
@@ -57,19 +59,23 @@ namespace Transactium.EcrService
                 }
             }
         }
-
+        // Log version and perform ping
         private async Task ExecuteConnectedState(TcpClient tcpClient)
         {
             var versResp = await Exchange(tcpClient, "VERS", TimeSpan.FromSeconds(1));
+            if (!versResp.StartsWith("VERS"))
+                throw new EcrException("Unexpected response");
             while (!ct.IsCancellationRequested)
             {
                 var pingResp = await Exchange(tcpClient, "PING", TimeSpan.FromSeconds(1));
+                if (!pingResp.StartsWith("PING"))
+                    throw new EcrException("Unexpected response");
                 state = State.Ready;
                 LogState();
                 await ExecuteReadyState(tcpClient);
             }
         }
-
+        // loop while not idle for a minute waiting for new requests
         private async Task ExecuteReadyState(TcpClient tcpClient)
         {
             while (!ct.IsCancellationRequested)
@@ -78,48 +84,93 @@ namespace Transactium.EcrService
                 try
                 {
                     var request = await requests.WaitRequest(ctWaitRequest.Token);
+                    // absolute timeout of 5 minutes to wait for reply and after this will trigger a connection reset
+                    using CancellationTokenSource ctWaitResponse=CancelAfter(TimeSpan.FromMinutes(5));
+                    // timeout indicated by caller for the response
+                    using CancellationTokenSource ctWaitForResponse = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     try
                     {
                         state = State.Waiting;
-                        var resp = await Exchange(tcpClient, request.Request, request.WaitFor);
+                        ctWaitForResponse.CancelAfter(request.WaitFor);
+                        var resp = await Exchange(tcpClient, request.Request, ctWaitForResponse.Token);
+                        await request.WaitLock(CancellationToken.None);
                         request.Response = resp;
                         request.RepliedTime = DateTime.UtcNow;
-                        request.Semaphore.Release();
+                        request.SignalReply();
+                        request.ReleaseLock();
                         state = State.Ready;
                     }
                     catch (Exception e)
                     {
-                        request.Semaphore.Release();
+                        await request.WaitLock(CancellationToken.None);
+                        //flag response status
                         request.Exception = e;
+                        request.SignalReply();
                         if (request.Removed)
                             request.Dispose();
-                        if (ctWaitRequest.IsCancellationRequested && !ct.IsCancellationRequested)
+                        else
+                            request.ReleaseLock();
+                        //see if its required to continue waiting for response
+                        if (e is OperationCanceledException 
+                            && ctWaitForResponse.IsCancellationRequested 
+                            && !ctWaitResponse.IsCancellationRequested)
+                        {
+                            var resp=await Receive(tcpClient, ctWaitResponse.Token);
+                            logger.LogError("Response received late - consider increasing timeout {ep} - {resp}", ep.ToString(), resp);
                             continue;
+                        }
+                        if (e is OperationCanceledException)
+                            throw new EcrException("Timeout", e);
                         throw;
                     }
                 }
                 catch (OperationCanceledException)
-                    when (!ct.IsCancellationRequested)
+                    when (!ct.IsCancellationRequested && ctWaitRequest.IsCancellationRequested)
                 {
-                    break;//redo ping 1 minute without activity
+                    //eat exception to exit state to rerun ping
+                    return;
                 }
             }
         }
-
+        /// <summary>
+        /// perform io function with terminal
+        /// </summary>
+        /// <param name="tcpClient"></param>
+        /// <param name="v"></param>
+        /// <param name="ts"></param>
+        /// <returns></returns>
         private Task<string> Exchange(TcpClient tcpClient, string v, TimeSpan ts)
         {
             using var ct = CancelAfter(ts);
             return Exchange(tcpClient,v, ct.Token);
         }
+        /// <summary>
+        /// perform io function with terminal
+        /// </summary>
+        /// <param name="tcpClient"></param>
+        /// <param name="v"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        /// <exception cref="EcrException"></exception>
 
         private async Task<string> Exchange(TcpClient tcpClient, string v, CancellationToken ct)
         {
             if (state ==State.Disconnected)
-                throw new Exception("Invalid State");
-            while (tcpClient.Available>0)
+                throw new EcrException("Invalid State");
+            // try to empty buffer before sending new request
+            while (true)
             {
-                var extra = await Receive(tcpClient,ct);
-                logger.LogWarning("Unexpected reply from {ep} - {extra}", ep.ToString(), extra);
+                try
+                {
+                    using var ctExtra = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    ctExtra.CancelAfter(100);
+                    var extra = await Receive(tcpClient, ctExtra.Token);
+                    logger.LogError("Unexpected reply from {ep} - {extra}", ep.ToString(), extra);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
             logger.LogInformation("TX {ep} {req}", ep.ToString(), v);
             await Send(tcpClient, v, ct);
@@ -128,71 +179,42 @@ namespace Transactium.EcrService
             return resp;
         }
 
-        private static async Task<string> Receive(TcpClient tcpClient,CancellationToken ct)
-        {
-            var blen = new byte[2];
-            if (2 != await tcpClient.Client.ReceiveAsync(blen,ct))
-                throw new Exception("Length header not received");
-            int len = blen[0] * 256 + blen[1];
-            if (len > 10240)
-                throw new Exception("Invalid Length");
-            var pl = new byte[len];
-            if (len != await tcpClient.Client.ReceiveAsync(pl,ct))
-                throw new Exception("Payload not Received");
-            var ret = System.Text.Encoding.UTF8.GetString(pl);
-            return ret;
-        }
-
-        private async Task Send(TcpClient tcpClient, string v, CancellationToken ct)
-        {
-            logger.LogInformation("TX: {req}", v);
-            await tcpClient.Client.SendAsync(MakePacket(v), ct);
-        }
-
-        private static ArraySegment<byte> MakePacket(string v)
-        {
-            var a = System.Text.Encoding.UTF8.GetBytes(v);
-            int len = a.Length;
-            byte[] ret = new byte[len + 2];
-            Array.Copy(a, 0, ret, 2, len);
-            ret[0] = (byte)(len / 256);
-            ret[1] = (byte)(len % 256);
-            return ret;
-        }
-
         public async ValueTask DisposeAsync()
         {
             if (!ct.IsCancellationRequested)
-                throw new Exception("Disposing without cancellation request");
+                throw new EcrException("Disposing without cancellation request");
             await executeTask;
             executeTask.Dispose();
             requests.Dispose();
         }
 
-        public async Task<string> Exchange(string request,TimeSpan waitFor)
+        public async Task<string> IO(string request,TimeSpan waitFor)
         {
             if (string.IsNullOrEmpty(request)) throw new ArgumentNullException(nameof(request));
             if (waitFor.TotalSeconds<1) throw new ArgumentOutOfRangeException(nameof(waitFor));
             if (state < State.Connected)
             {
                 logger.LogWarning("ECR not connected - Exchange failed for {request}", request);
-                throw new Exception("ECR not connected");
+                throw new EcrException("ECR not connected");
             }
             EcrRequest req = new() { Request = request, RequestedTime = DateTime.UtcNow, WaitFor = waitFor };
             requests.AddRequest(req);
             try
             {
                 using var ctWait = CancelAfter(waitFor);
-                await req.Semaphore.WaitAsync(ctWait.Token);
+                await req.WaitReply(ctWait.Token);
+                await req.WaitLock(CancellationToken.None);
                 req.Dispose();
                 if (!req.RepliedTime.HasValue)
-                    throw req.Exception??new Exception("Request not replied");
+                    throw req.Exception??new EcrException("Request not replied");
                 return req.Response;
             }
             catch(Exception e)
             {
                 logger.LogWarning(e, "Exchange failed for {request}",request);
-                EcrRequests.RemoveRequest(req);
+                await EcrRequests.RemoveRequest(req);
+                if (e is OperationCanceledException)
+                    throw new EcrException("Timeout", e);
                 throw;
             }
         }

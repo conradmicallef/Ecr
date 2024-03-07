@@ -1,12 +1,11 @@
-﻿// See https://aka.ms/new-console-template for more information
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 
 namespace Transactium.EcrService
 {
     sealed class EcrRequests:IDisposable
     {
         readonly ConcurrentQueue<EcrRequest> requests=new();
-        readonly SemaphoreSlim newRequest = new(0,9999);
+        readonly SemaphoreSlim newRequest = new(0);//no maximum, initialized 0, represents count of pending requests
 
         public void Dispose()
         {
@@ -30,17 +29,25 @@ namespace Transactium.EcrService
                 await newRequest.WaitAsync(ct);
                 if (requests.TryDequeue(out var req))
                 {
+                    await req.WaitLock(CancellationToken.None);
                     if (req.Removed)
                         req.Dispose();
                     else
+                    {
+                        req.ReleaseLock();
                         return req;
+                    }
                 }
             }
         }
 
-        public static void RemoveRequest(EcrRequest req)
+        public static async Task RemoveRequest(EcrRequest req)
         {
+            await req.WaitLock(CancellationToken.None);
             req.Removed = true;
+            req.ReleaseLock();
+            if (req.Exception != null)
+                req.Dispose();
         }
     }
 }
