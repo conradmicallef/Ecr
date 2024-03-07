@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.9.34616.47
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ecr", "Ecr.csproj", "{1CD3C565-789D-4CDC-8178-2DC5D4FF7BF9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1CD3C565-789D-4CDC-8178-2DC5D4FF7BF9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1CD3C565-789D-4CDC-8178-2DC5D4FF7BF9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1CD3C565-789D-4CDC-8178-2DC5D4FF7BF9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1CD3C565-789D-4CDC-8178-2DC5D4FF7BF9}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {B8A41445-D396-40D3-B92B-F9AC7FEE895E}
+	EndGlobalSection
+EndGlobal
