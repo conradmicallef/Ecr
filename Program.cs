@@ -32,7 +32,7 @@ services.AddSingleton<EcrSimulator>();
             }
             return (false, req);
         });
-        await ecr.WaitState(EcrConnection.State.Ready, TimeSpan.FromSeconds(30));
+        await ecr.WaitForState(EcrConnection.State.Ready, TimeSpan.FromSeconds(30));
         while (true) { 
             try{
                 var resp=await ecr.IO("W001", TimeSpan.FromSeconds(2));
@@ -42,6 +42,8 @@ services.AddSingleton<EcrSimulator>();
                 logger.LogError(ex, "In program");
             }
             await Task.Delay(1000);
+            if (Console.KeyAvailable)
+                break;
         }
     }
     catch(Exception ex)

@@ -93,6 +93,7 @@ namespace Transactium.EcrService
             listener.Stop();
             cts.Cancel();
             await executeTask;
+            executeTask.Dispose();
             cts.Dispose();
             handlerLock.Dispose();
         }

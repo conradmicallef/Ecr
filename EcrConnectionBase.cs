@@ -1,5 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
-using System.Net.Sockets;
+﻿using System.Net.Sockets;
 
 namespace Transactium.EcrService
 {

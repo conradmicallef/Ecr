@@ -6,6 +6,10 @@ namespace Transactium.EcrService
 {
     /// <summary>
     /// Class handing an ECR connection. This should be only instantiated from the factory and never directly
+    /// Consuming it: you call WaitForState function or IO function
+    /// Task handles connectivity, reconnections, and monitoring for activity
+    /// Task queues commands if sent in parallel, and awaits response from terminal before sending
+    /// Task generates logs of request and responses
     /// </summary>
     public sealed class EcrConnection : EcrConnectionBase,IAsyncDisposable
     {
@@ -56,8 +60,12 @@ namespace Transactium.EcrService
                 catch (Exception e){
                     logger.LogError(e, "Error in Connection {ep}", ep.ToString());
                     state = State.Disconnected;
+                    if (!ct.IsCancellationRequested)
+                        await Task.Delay(30000,ct);
                 }
             }
+            logger.LogInformation("Stopped ECR {ep}", ep.ToString());
+
         }
         // Log version and perform ping
         private async Task ExecuteConnectedState(TcpClient tcpClient)
@@ -175,7 +183,7 @@ namespace Transactium.EcrService
             logger.LogInformation("TX {ep} {req}", ep.ToString(), v);
             await Send(tcpClient, v, ct);
             var resp=await Receive(tcpClient,ct);
-            logger.LogInformation("RX {ep} {req}", ep.ToString(), resp);
+            logger.LogInformation("RX {ep} {resp}", ep.ToString(), resp);
             return resp;
         }
 
@@ -219,7 +227,7 @@ namespace Transactium.EcrService
             }
         }
 
-        public async Task WaitState(State waitForState, TimeSpan timeSpan)
+        public async Task WaitForState(State waitForState, TimeSpan timeSpan)
         {
             using var ctWait=CancelAfter(timeSpan);
             while (!ctWait.IsCancellationRequested)
@@ -231,10 +239,11 @@ namespace Transactium.EcrService
                     await Task.Delay(1000, ctWait.Token);
                 }
                 catch {
-                    logger.LogWarning("State {state} not Reached", waitForState);
+                    logger.LogWarning("State {waitForState} not Reached - stuck in {state}", waitForState,state);
                     throw; 
                 }
             }
         }
+        public State GetState() => state;
     }
 }
