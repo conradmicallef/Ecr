@@ -101,15 +101,13 @@ namespace Transactium.EcrService
                         state = State.Waiting;
                         ctWaitForResponse.CancelAfter(request.WaitFor);
                         var resp = await Exchange(tcpClient, request.Request, ctWaitForResponse.Token);
-                        request.SetResponse(resp);
-                        request.SignalReply();
+                        request.SetResponseAndSignalReply(resp);
                         state = State.Ready;
                     }
                     catch (Exception e)
                     {
                         //flag response status
-                        request.SetException(e);
-                        request.SignalReply();
+                        request.SetExceptionAndSignalReply(e);
                         if (request.Removed)
                             request.Dispose();
                         //see if its required to continue waiting for response

@@ -4,7 +4,7 @@ using System.Net.Sockets;
 
 namespace Transactium.EcrService
 {
-    public sealed class EcrSimulator : EcrConnectionBase, IAsyncDisposable
+    public class EcrSimulator : EcrConnectionBase, IAsyncDisposable
     {
         readonly CancellationTokenSource cts = new();
         readonly TcpListener listener = new(IPAddress.Loopback, 2000);
@@ -96,6 +96,7 @@ namespace Transactium.EcrService
             executeTask.Dispose();
             cts.Dispose();
             handlerLock.Dispose();
+            GC.SuppressFinalize(this);
         }
     }
 }

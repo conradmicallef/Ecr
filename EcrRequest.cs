@@ -13,7 +13,7 @@
         public Exception Exception { get; private set; }
 
         public Task WaitReply(CancellationToken ct) => Semaphore.WaitAsync(ct);
-        public void SignalReply() => Semaphore.Release();
+        void SignalReply() => Semaphore.Release();
         public Task WaitLock(CancellationToken ct) => Lock.WaitAsync(ct);
         public void ReleaseLock() => Lock.Release();
 
@@ -23,7 +23,7 @@
             Lock.Dispose();
         }
 
-        internal void SetResponse(string resp)
+        internal void SetResponseAndSignalReply(string resp)
         {
             LockExec(() =>
             {
@@ -31,16 +31,18 @@
                     throw new InvalidOperationException("Already Replied");
                 Response = resp;
                 RepliedTime = DateTime.UtcNow;
+                SignalReply();
             });
         }
 
-        internal void SetException(Exception e)
+        internal void SetExceptionAndSignalReply(Exception e)
         {
             LockExec(() =>
             {
                 if (Exception != null)
                     throw new InvalidOperationException("Exception already set");
                 Exception = e;
+                SignalReply();
             });
         }
 
